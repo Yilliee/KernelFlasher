@@ -1,0 +1,135 @@
+#!/bin/sh
+
+OUTFD="/proc/self/fd/$2";
+ZIPNAME=$3;
+
+ui_print() {
+	echo "ui_print $1" > "$OUTFD";
+	echo "ui_print" > "$OUTFD";
+}
+
+working_dir=/tmp
+magiskboot=$working_dir/magiskboot;
+dump_boot=$working_dir/dump_fl.img;
+patch_boot=$working_dir/patch_fl.img;
+fl_unpack=$working_dir/fl
+
+ui_print " ";
+ui_print "   {printl1txt} ";
+ui_print "   {printl2txt} ";
+ui_print "   {printl3txt}  ";
+ui_print " ";
+
+# Extract the magisk binary
+ui_print " - Extracting the magiskboot binary from zip to $working_dir";
+unzip -o $ZIPNAME magiskboot -d $working_dir || exit 2;
+ui_print " ";
+
+
+ui_print " - Extracting the new prebuilts from zip to $working_dir";
+unzip -o $ZIPNAME kernel -d $working_dir || (ui_print " Kernel not found in zip. Skiping..." && no_kernel=true );
+unzip -o $ZIPNAME dtb -d $working_dir || (ui_print " DTB not found in zip. Skiping..." && no_dtb=true );
+unzip -o $ZIPNAME dtbo -d $working_dir || (ui_print " DTBO not found in zip. Skiping..." && no_dtbo=true );
+ui_print " ";
+
+if [ -e /dev/block/by-name/boot ]; then
+	blockdevice=/dev/block/by-name/boot;
+	ui_print "Using /dev/block/by-name/boot as the block device";
+elif [ -e /dev/block/by-name/boot$(getprop ro.boot.slot_suffix) ]; then
+	blockdevice=/dev/block/by-name/boot_
+	$(getprop ro.boot.slot_suffix);
+	ui_print "Using /dev/block/by-name/boot"$(getprop ro.boot.slot_suffix)" as the block device";
+elif [ -e /dev/block/by-name/boot_a ]; then
+	blockdevice=/dev/block/by-name/boot_a;
+	ui_print "Using /dev/block/by-name/boot_a as the block device";
+else
+	ui_print "No proper block device could be found";
+	ui_print "Please contact Yillié on Telegram or Xda for more help";
+	ui_print "Telegram : @Yilliee	XDA : @Yillié";
+	ui_print "Exiting..";
+	exit 1;
+fi
+
+if [ -e /dev/block/by-name/dtbo ]; then
+	dtbo_blockdevice=/dev/block/by-name/dtbo;
+	ui_print "Using /dev/block/by-name/dtbo as the block device for dtbo image";
+else
+	ui_print "No proper block device could be found for dtbo";
+	ui_print "Please contact Yillié on Telegram or Xda for more help";
+	ui_print "Telegram : @Yilliee	XDA : @Yillié";
+	ui_print "DTBO won't be flashed even if it exists.";
+	dtbo_blockdevice="false"
+fi
+ui_print " ";
+
+##############################################
+### Run a few checks before the real thing ###
+##############################################
+
+if [ ! -e $magiskboot ]; then
+	ui_print " - Magiskboot not found at "$magiskboot;
+	exit 2;
+fi
+
+#####################
+### End of checks ###
+#####################
+
+###########################
+### Start the real work ###
+###########################
+
+dd if=$blockdevice of=$dump_fl;
+
+ui_print " - Making folder : "$fl_unpack;
+mkdir -p $fl_unpack && cd $fl_unpack || exit 3;
+
+ui_print " - Unpacking old boot image..";
+$magiskboot unpack -h $dump_fl;
+ui_print " "
+
+if [ "$no_kernel" != "true" ]; then
+   old_md5sum=$(md5sum -b $fl_unpack/kernel);
+   new_md5sum=$(md5sum -b $working_dir/kernel);
+   if [ $old_md5sum != $new_md5sum ]; then
+      cp $working_dir/kernel $fl_unpack/kernel;
+      kernel_changed=true;
+   fi
+fi
+
+if [ "$no_dtb" != "true" ]; then
+   old_md5sum=$(md5sum -b $fl_unpack/dtb);
+   new_md5sum=$(md5sum -b $working_dir/dtb);
+   if [ $old_md5sum != $new_md5sum ]; then
+      cp $working_dir/dtb $fl_unpack/dtb;
+      dtb_changed=true;
+   fi
+fi
+
+if [ "$no_dtbo" != "true" ] && [ "$dtbo_blockdevice" != "false" ]; then
+   ui_print "  Flashing dtbo image to $dtbo_blockdevice"
+   dd if=$working_dir/dtbo of=$dtbo_blockdevice;
+   dtbo_changed=true;
+fi
+   
+if [ "$kernel_changed" == "true" ] || [ "$dtb_changed" == "true" ]; then
+
+	ui_print " - Rebuilding boot image...";
+	ui_print " "
+	$magiskboot repack $dump_fl $patch_fl;
+
+	ui_print " - Flashing new boot image...";
+	ui_print " "
+	dd if=$patch_fl of=$blockdevice;
+
+else
+	ui_print " - No new files detected.";
+	ui_print " - No need to reflash the boot image";
+fi
+
+rm -rf $fl_unpack $patch_fl $dump_fl $magiskboot
+
+ui_print "   Finished   "
+ui_print " "
+
+exit 0
